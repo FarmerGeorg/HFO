@@ -1,0 +1,305 @@
+HOW TO DECOMPOSE THE PHOTODIODE SIGNAL (report.tex Figure 12)
+=================================================================
+
+Audience: an AI (or human) that has a working CAVITY implementation
+(complex reflectionCoefficient(detuning)) and can compute phase-
+modulation sideband amplitudes (the carrier plus order +1/-1 sidebands,
+amplitudes J_0(beta)/J_1(beta)/-J_1(beta) via the Jacobi-Anger
+expansion), and wants to reproduce report.tex's Figure 12
+(\label{fig:pdh-photodiode-power-scan}): the RAW photodiode power,
+BEFORE any mixing or demodulation, split into its DC / omega_m / 2*omega_m
+frequency components.
+
+This is a different, and earlier, stage of the pipeline than the other
+tutorials in this directory. tutorials/pdhphasor.txt and
+tutorials/reflectedphase.txt are both about quantities AFTER
+demodulation (the error signal epsilon(detuning), a function of
+detuning alone). This tutorial is about the photodiode's power
+BEFORE demodulation, P_PD(t), a genuine function of TIME at one instant's
+detuning -- the signal the mixer in the other tutorials' PDH-spectrum
+primitive actually operates on. Understanding this decomposition is what
+explains WHY the mixer+low-pass recipe in that primitive works at all.
+
+
+1. WHY THE PHOTODIODE SIGNAL SPLITS INTO EXACTLY THREE HARMONICS
+-----------------------------------------------------------------------
+
+With sidebands truncated to orders l in {-1, 0, +1} (the standard
+three-line PDH picture), each line has its own reflected phasor:
+
+    E_refl,l = a_l * r(Delta + l*f_m),     l in {-1, 0, +1}
+
+where a_l is that line's Jacobi-Anger amplitude (a_0=J_0(beta),
+a_1=J_1(beta), a_-1=-J_1(beta)) and r(.) is the cavity's complex
+reflection coefficient. The reflected field recombining on the
+photodiode is
+
+    E_refl(t) = sum_l  E_refl,l * exp(i*l*omega_m*t),     omega_m = 2*pi*f_m.
+
+A photodiode measures POWER, the squared magnitude, which expands into
+NINE cross-terms (three lines times three lines):
+
+    P_PD(t) = |E_refl(t)|^2 = sum_l sum_l'  E_refl,l * conj(E_refl,l') * exp(i*(l-l')*omega_m*t).
+
+Group these nine terms by k = l - l', which sorts them by frequency:
+k can only take the values {-2, -1, 0, +1, +2}, so the entire signal
+resolves into exactly THREE frequency groups:
+
+  - k = 0 (three terms, l = l'): no time dependence at all -- the DC term.
+  - k = +-1 (four terms, two conjugate pairs): oscillate at omega_m.
+  - k = +-2 (two terms, one conjugate pair): oscillate at 2*omega_m.
+
+Because every cross-term lands EXACTLY on a harmonic of f_m (an integer
+times f_m, never in between), this three-way split is EXACT, not an
+approximation -- and, crucially, it is EXHAUSTIVE only because exactly
+three lines are present. If your sideband table includes orders beyond
++-1 (a higher MaxOrder truncation of the Jacobi-Anger expansion), more
+cross-terms appear at 3*omega_m, 4*omega_m, etc., and this specific
+three-term split no longer reconstructs the full signal by itself --
+check how many orders are actually present before assuming the sum below
+is exact.
+
+
+2. THE THREE TERMS, IN CLOSED FORM
+----------------------------------------
+
+Compute the three reflected-line phasors once, at whatever detuning
+you're evaluating:
+
+    Erefl0  = a0  * r(Delta)
+    Erefl1  = a1  * r(Delta + f_m)
+    ErefIm1 = am1 * r(Delta - f_m)
+
+DC term (no time dependence -- the incoherent sum of each line's own
+reflected power):
+
+    P_DC = |Erefl0|^2 + |Erefl1|^2 + |ErefIm1|^2
+
+omega_m term, via its beat-note coefficient C (the sum of the two
+(l,l') = (1,0) and (0,-1) cross-terms -- note the sideband sign flip
+a_-1 = -a_1 is ALREADY carried inside ErefIm1, so no extra sign
+adjustment is needed when forming C):
+
+    C = Erefl1 * conj(Erefl0)  +  Erefl0 * conj(ErefIm1)
+    P_omega(t) = 2 * real( C * exp(1i*omega_m*t) )
+
+2*omega_m term, via its own beat-note coefficient D (the single
+(l,l') = (1,-1) cross-term):
+
+    D = Erefl1 * conj(ErefIm1)
+    P_2omega(t) = 2 * real( D * exp(1i*2*omega_m*t) )
+
+Both P_omega(t) and P_2omega(t) come out real by construction (each is a
+term plus its own complex conjugate), as a physical power's piece must
+be -- if you ever see an imaginary residue here, you've made an algebra
+error, not found a genuine physical effect.
+
+Note D's structural difference from C: D depends ONLY on the two
+sidebands' own reflection coefficients (Erefl1 and ErefIm1) -- it never
+involves the carrier's reflection at all. This single fact is the key to
+reading the sideband-resonance behavior in Section 4 below.
+
+Reconstruction check (exact for the three-line case, Section 1):
+
+    P_PD(t) =?= P_DC + P_omega(t) + P_2omega(t)
+
+Verify this against a DIRECT computation of |E_refl(t)|^2 from Section
+1's own formula, synthesized over a few modulation periods. They must
+agree to numerical noise. This is your primary correctness check for
+this whole tutorial, same role as the cross-checks in the other
+tutorials in this directory.
+
+
+3. TWO SETTINGS TO COMPUTE THIS IN
+----------------------------------------
+
+  A. FIXED DETUNING, TIME-DOMAIN VIEW (matches
+     computePhotodiodePowerHarmonics.m). Delta is a single fixed value;
+     C, D, P_DC are single fixed complex/real numbers; P_omega(t) and
+     P_2omega(t) are the two oscillating curves above, evaluated over an
+     array of t spanning a few modulation periods. Section 2's closed
+     form is the primary path. A useful INDEPENDENT validation path:
+     synthesize E_refl(t) numerically and project it onto the exact
+     DC/omega_m/2*omega_m frequency bins via a discrete Fourier
+     projection (a = 2*mean(signal.*cos(k*omega_m*t)), b =
+     2*mean(signal.*sin(k*omega_m*t)), component = a*cos(...)+b*sin(...)).
+     This ONLY gives clean, leakage-free results if your sampled record
+     spans an exact INTEGER number of modulation periods -- otherwise the
+     cos/sin basis functions at these three frequencies are no longer
+     exactly orthogonal over your finite record, and you'll see small
+     cross-talk between bins that is an artifact of your own sampling
+     choice, not a real discrepancy to debug.
+
+  B. SWEPT DETUNING, "FREQUENCY SCAN" VIEW (matches
+     computeReflectedPowerFrequencyScan.m). Delta itself varies slowly
+     and continuously over time as some external process scans the
+     laser (or cavity) across a span wide enough to see the carrier
+     resonance and both sideband resonances (a span of a few cavity
+     linewidths, or +-1.3*f_m to catch all three features at once). At
+     each instant, evaluate Section 2's formulas using THAT INSTANT'S
+     OWN Delta(t) -- this is the QUASI-STATIC (adiabatic) approximation:
+     treat the cavity's response as if it were sitting in steady state
+     at the current detuning, rather than solving its actual
+     time-dependent response to a continuously chirped input. This is
+     only valid if the scan is SLOW compared to the cavity's photon
+     storage (ring-down) time, roughly 1/(pi*LinewidthFWHM) -- check that
+     your scan's time-to-cross-one-linewidth is comfortably longer than
+     that (a factor of ~10 margin is a reasonable target); if it isn't,
+     this entire closed-form approach is invalid and you'd need to
+     actually solve the cavity's dynamical response to a chirped drive,
+     which is a materially different (and harder) problem this framework
+     does not address.
+
+
+4. WHAT EACH TERM PHYSICALLY LOOKS LIKE -- READ THIS BEFORE PLOTTING
+--------------------------------------------------------------------------
+
+  - P_DC dips near the carrier resonance but NEVER FULLY NULLS, even at
+    exact critical coupling where the carrier's own reflection nulls
+    completely. Why: P_DC sums all three lines' reflected power, and the
+    two sidebands sit f_m away from the carrier -- far outside the
+    cavity's narrow resonance -- so they keep reflecting almost fully
+    regardless of what the carrier is doing. It's informative to overlay
+    two reference curves alongside P_DC itself: "carrier only" (just
+    |Erefl0|^2, which DOES null at critical coupling) and "sidebands
+    only" (P_DC minus the carrier-only curve, which stays roughly flat).
+    The gap between P_DC's actual floor and zero is exactly the
+    sidebands-only curve's value there.
+
+  - P_omega(t)'s ENVELOPE (its peak-to-peak amplitude as Delta scans
+    through resonance, not the fast in-period wiggle itself) pinches
+    down to a node and re-emerges with the OPPOSITE sign exactly at the
+    carrier resonance. This null-plus-sign-flip is not a separate
+    phenomenon from the PDH error signal's own zero-crossing -- it is the
+    exact same zero-crossing, just not yet demodulated. Demodulating
+    P_omega(t) (mixing against cos(omega_m*t+theta) and low-pass
+    filtering, or equivalently taking Re[C*exp(-i*theta)] directly from
+    Section 2's C) is precisely what turns this raw envelope feature into
+    the clean epsilon(Delta) S-curve of the other tutorials.
+
+  - P_2omega(t)'s envelope is nearly CONSTANT across a scan centered on
+    the carrier resonance. This follows directly from D depending only
+    on the two sidebands' own reflection (Section 2) -- the sidebands sit
+    fixed, far from the carrier's resonance, so scanning the carrier
+    through its own resonance barely moves D at all.
+
+  - The picture INVERTS at a SIDEBAND resonance (Delta = -f_m or +f_m,
+    where that sideband -- not the carrier -- sits on the cavity's
+    resonance): that sideband's own field now nulls, which kills D
+    COMPLETELY (P_2omega's envelope collapses to zero there), while C
+    only loses ONE of its two summands and survives, non-zero. The
+    result: P_omega(t) shows a SAME-SIGNED BUMP at a sideband resonance,
+    not a clean sign-flipping null the way it does at the carrier
+    resonance. This qualitative difference -- clean zero-crossing at the
+    carrier resonance vs. same-signed bump at a sideband resonance -- is
+    the single most important contrast to make visible on this plot, and
+    is exactly what makes a sideband resonance a qualitatively different
+    feature from the carrier resonance, not merely a smaller copy of it.
+
+  - The SUM P_DC + P_omega(t) + P_2omega(t) can transiently rise ABOVE 1
+    even though every individual line reflects and transmits losslessly.
+    This is NOT a bug and should not be "corrected" by renormalizing --
+    only the TIME-AVERAGED reflected-plus-transmitted power is
+    conserved; the cavity's frequency-dependent response redistributes
+    power IN TIME between the coherent lines (analogous to dispersion
+    reshaping a pulse's temporal envelope without creating energy), so
+    an instantaneous power reading above 1 is physically expected.
+
+
+5. A RECOMMENDED LAYOUT (what report.tex Figure 12 actually does)
+------------------------------------------------------------------------
+
+Lay the figure out as a grid: COLUMNS are distinct time/detuning
+windows, ROWS are the four quantities (P_DC, P_omega(t), P_2omega(t),
+and their sum). A layout that reproduces every qualitative point in
+Section 4 in one figure:
+
+  - Column 1, a WIDE overview crossing all three resonances at once
+    (e.g. +-1.3*f_m), so the carrier feature and both sideband features
+    are visible together and their relative scale is honest.
+  - Column 2, a CLOSE zoom (e.g. +-3 linewidths) around the carrier
+    resonance -- at this width the fast omega_m/2*omega_m oscillation is
+    no longer individually resolved on screen, only its ENVELOPE, which
+    is exactly what you want for reading off the null/sign-flip
+    behavior described in Section 4.
+  - Column 3, the same close zoom around ONE representative sideband
+    resonance (say Delta = -f_m; the other sideband at +f_m mirrors it,
+    so a second column adds little).
+
+Reference time to t=0 at EACH COLUMN'S OWN local resonance (not one
+shared absolute time origin across columns), and mark every OTHER
+resonance that happens to fall within a given column's window with a
+dotted vertical line, so a reader can tell at a glance whether a feature
+in that column belongs to the column's own resonance or is bleed-over
+from a nearby one.
+
+If you're also building the demodulated companion figure (report.tex's
+Figure 13, already-demodulated epsilon/zeta vs. detuning), reuse these
+EXACT same three windows for both figures, so the raw time-domain
+picture here and its demodulated counterpart can be read side by side
+without their windows silently drifting apart from each other.
+
+
+6. PITFALLS
+---------------
+
+  - Don't hand-add a sign flip when forming C. The upper/lower sideband
+    counter-rotation sign (a_-1 = -a_1) is already baked into ErefIm1 the
+    moment you compute it from the correct Jacobi-Anger amplitude;
+    C = Erefl1*conj(Erefl0) + Erefl0*conj(ErefIm1) needs no further
+    adjustment. Adding one anyway double-flips the sign and will look
+    plausible (same magnitude, wrong sign) rather than obviously broken.
+
+  - Don't conflate this tutorial's P_omega(t) (a TIME-domain signal at
+    one fixed, or quasi-statically varying, detuning) with the other
+    tutorials' epsilon(Delta) (a function of DETUNING alone, already
+    demodulated). Plotting P_omega(t) against a detuning axis, or
+    treating its raw envelope amplitude as if it already were epsilon,
+    skips the actual mixing + low-pass step (or its closed-form
+    equivalent, Re[C*exp(-i*theta)]) that the other tutorials' PDH
+    spectrum primitive performs.
+
+  - The three-harmonic split (Section 1) is exact ONLY for exactly three
+    spectral lines (orders -1, 0, +1). Confirm your sideband table's
+    MaxOrder before assuming P_DC + P_omega + P_2omega reconstructs the
+    signal exactly -- a higher-order truncation needs additional harmonic
+    groups (3*omega_m, 4*omega_m, ...) to close the sum.
+
+  - When validating via Fourier projection (Section 3.A), sample an
+    exact integer number of modulation periods. A non-integer number of
+    periods introduces spectral leakage between the DC/omega_m/2*omega_m
+    bins that will look like a cross-check failure but is actually just
+    a sampling-window artifact.
+
+  - When using the quasi-static swept-detuning view (Section 3.B),
+    verify the scan-speed-vs-ring-down-time margin before trusting the
+    result. A scan that's too fast relative to
+    1/(pi*LinewidthFWHM) invalidates the entire quasi-static premise this
+    tutorial's Section 3.B relies on.
+
+  - Don't renormalize the sum to force it below 1 (Section 4's last
+    point) -- an instantaneous total above 1 is physically correct for a
+    lossless, dispersive multi-line field, not a normalization bug.
+
+
+SUMMARY CHECKLIST
+--------------------
+[ ] confirmed exactly three sideband orders (-1, 0, +1) are in use, or
+    accounted for additional harmonic groups if not
+[ ] Erefl0/Erefl1/ErefIm1 computed from the cavity's complex
+    reflectionCoefficient at Delta, Delta+f_m, Delta-f_m respectively
+[ ] P_DC, C, D computed per Section 2's closed forms, with no manual
+    sign adjustment for the a_-1 = -a_1 counter-rotation (already baked
+    into ErefIm1)
+[ ] P_DC + P_omega(t) + P_2omega(t) cross-checked against a directly
+    synthesized |E_refl(t)|^2 to numerical noise
+[ ] (if using Fourier-projection validation) sampled record spans an
+    exact integer number of modulation periods
+[ ] (if sweeping detuning) scan speed checked against the cavity's
+    ring-down time, ~1/(pi*LinewidthFWHM), with comfortable margin
+[ ] plot distinguishes the carrier resonance's clean null+sign-flip in
+    P_omega(t) from the sideband resonance's same-signed bump, and
+    explains both via D's carrier-independence
+[ ] "carrier only"/"sidebands only" reference curves included alongside
+    P_DC to explain why its on-resonance floor doesn't reach zero
+[ ] sum plot's excursion above 1 left as-is, not renormalized

@@ -1,0 +1,226 @@
+HOW TO CALCULATE THE REFLECTED PHASE
+=====================================
+
+Audience: an AI (or human) that has a working CAVITY implementation
+exposing a complex amplitude reflection coefficient r(detuning) =
+E_reflected / E_incident (in this repo: OpticalCavity.reflectionCoefficient),
+and needs to compute and plot its PHASE, arg(r), correctly.
+
+Read this before writing code. Every mistake described in Section 3 below
+produces a plot that "looks basically right" at a glance but is either
+numerically wrong at specific points or gives the wrong qualitative
+conclusion about the cavity. This document exists because both kinds of
+mistake are easy to miss on a quick visual check.
+
+
+0. WHY THIS IS ITS OWN TOPIC, NOT JUST "CALL angle()"
+---------------------------------------------------------
+
+A photodiode only measures power, |r|^2 -- it throws away phase
+completely. But the reflected phase is the entire reason PDH locking
+works: it's a fast, sign-changing signal that tells you which side of
+resonance the laser sits on, something the (symmetric, sign-blind) power
+response cannot do on its own. Getting this quantity right, and getting
+it wrong in a way that's easy to spot, both matter.
+
+IMPORTANT: if the only "reflection spectrum" primitive you've been given
+returns real-valued power (|r(f)|^2, e.g. this repo's
+computeReflectedPowerFrequencyScan.m), that primitive CANNOT give you
+phase -- phase information was already discarded before that function's
+output. You need the underlying complex amplitude coefficient itself
+(the cavity's own reflectionCoefficient method, or an equivalent that
+returns a complex number, not a squared magnitude). Confirm you're
+calling the complex-valued primitive before proceeding.
+
+
+1. THE BASIC RECIPE
+-----------------------
+
+Given a detuning array and the cavity's complex reflection coefficient:
+
+    detuningHz = linspace(loEdge, hiEdge, numPoints);
+    r = cavity.reflectionCoefficient(detuningHz);      % complex array
+    phaseRad = angle(r);                               % in (-pi, pi]
+    phaseDeg = rad2deg(phaseRad);
+
+This is correct FOR A SINGLE ISOLATED POINT, or for a scatter of points
+you don't intend to connect into a continuous curve. It is USUALLY WRONG
+for a swept curve -- see Section 2.
+
+
+2. THE BRANCH-CUT PITFALL: UNWRAP, NOT angle(), FOR A SWEPT CURVE
+-----------------------------------------------------------------------
+
+angle() always returns a value in (-pi, pi] (or (-180, 180] in degrees).
+That's a mathematical convention, not a physical one: the true phase is
+continuous, but angle() folds it back into that fixed window every time
+it would cross +/-180 degrees, producing an artificial jump in the plotted
+curve at exactly that crossing.
+
+This isn't a rare edge case for this system -- it's the COMMON case. Far
+from any resonance, r(detuning) -> -r1 (just the direct bounce off the
+front mirror), a negative real number, which sits EXACTLY on the +/-180
+degree branch cut. Any cavity whose local phase excursion swoops through
+that background value (which is any cavity, since that's what the curve
+approaches at both ends of a wide-enough sweep) will show a spurious jump
+under raw angle(), even though the true underlying phase is perfectly
+smooth.
+
+Fix: unwrap() before converting to degrees, evaluated across the full
+ordered detuning sweep in one call:
+
+    phaseDegUnwrapped = rad2deg(unwrap(angle(cavity.reflectionCoefficient(detuningHz))));
+
+Two conditions this depends on, both usually satisfied by construction
+but worth stating:
+  - detuningHz must be sorted and evaluated in that order (unwrap works
+    by comparing each sample to its immediate predecessor in the array;
+    an unordered or randomly-sampled detuning array defeats it silently).
+  - the sampling must be dense enough that the TRUE phase never changes
+    by more than pi between adjacent samples. Near a narrow, high-finesse
+    resonance the phase can swing a full 360 degrees within a tiny
+    fraction of the FSR -- if your sample spacing is coarse relative to
+    the LinewidthFWHM, unwrap can misjudge which multiple of 2*pi to add
+    and produce a wrong (but plausible-looking) curve. When in doubt,
+    sample many points per linewidth across the swept span, not just
+    many points total.
+
+
+3. WHAT THE PHASE ACTUALLY LOOKS LIKE, AND WHY
+---------------------------------------------------
+
+Off resonance, the reflected field is essentially just the direct bounce
+off the front mirror -- constant, uninteresting phase (exactly arg(-r1),
+i.e. +/-180 degrees). Near resonance, |r| passes through (or near) a
+minimum -- for a critically coupled cavity, exactly zero. An amplitude
+that passes through zero is a PHASE SINGULARITY: the phasor has to spin
+around to get from "pointing one way" to "pointing the opposite way" as
+detuning crosses the resonance. That spin is the steep phase excursion
+visible near resonance, and it's the whole reason the reflected phase is
+useful as a locking signal -- it's a fast, monotonic (in the interesting
+cases -- see Section 4), sign-carrying feature localized right where you
+need it, unlike the reflected power which is symmetric and gives no sign
+information at all.
+
+Decomposed into Cartesian components (equivalent information, sometimes
+easier to reason about numerically):
+  - Re(r) crosses zero if and only if the phase passes through +/-90
+    degrees, i.e. if and only if the resonance circle (Section 4)
+    encloses or touches the origin.
+  - Im(r) is the antisymmetric, "dispersive"-shaped curve that flips
+    sign exactly at resonance regardless of coupling regime -- this is
+    the shape the PDH error signal is electronically built to reproduce.
+
+A useful numerical sanity check at a single detuning: compute both
+angle(r) and atan2(imag(r), real(r)) -- they should agree exactly (atan2
+is what angle() calls internally in most environments); if you're
+hand-rolling phase from separately-computed Re/Im curves rather than
+from the original complex r, verify this agreement before trusting the
+hand-rolled version.
+
+
+4. THE PART A LOCAL SLOPE CAN'T TELL YOU: WINDING NUMBER OVER ONE FSR
+--------------------------------------------------------------------------
+
+Whether the reflected phase completes a full 360-degree turn as detuning
+sweeps across one FULL free spectral range -- not just near one resonance
+-- distinguishes undercoupled cavities from critically-coupled/overcoupled
+ones, and this is NOT reliably visible from a narrow zoomed-in view alone:
+an undercoupled cavity's phase can still "swoop" down and back up near
+resonance in a way that looks qualitatively similar to a monotonic sweep
+if you only look at a few linewidths around zero detuning.
+
+The reliable test is the NET phase change over one full FSR:
+
+    fullFsrDetuning = linspace(-cavity.FSR/2, cavity.FSR/2, manyPoints);
+    unwrappedPhaseDeg = rad2deg(unwrap(angle(cavity.reflectionCoefficient(fullFsrDetuning))));
+    netPhaseChangeDeg = unwrappedPhaseDeg(end) - unwrappedPhaseDeg(1);
+
+    % netPhaseChangeDeg ~= +360  =>  resonance circle encloses/touches the
+    %                                 origin: critically coupled or overcoupled
+    % netPhaseChangeDeg ~=    0  =>  resonance circle stays outside the
+    %                                 origin: undercoupled
+
+This works because r(detuning), swept across one full FSR, traces an
+exact circle in the complex plane (a Mobius transform of the unit
+circle e^{i*phi}, phi = 2*pi*detuning/FSR -- provably circular for any
+mirror reflectivities). Whether that circle encloses the origin is a
+topological fact about the whole loop, not a local property near any one
+point, which is exactly why it needs a full-FSR sweep to detect
+reliably, not just a zoomed-in look near resonance. Concretely:
+  - critically coupled (R1 = R2): the circle passes exactly through the
+    origin; the winding is still a full 360 degrees (r(0) = 0 is a
+    removable/limiting singularity in phase, not a break in the loop).
+  - overcoupled (R1 < R2): the circle strictly encloses the origin; a
+    clean, close-to-monotonic 360-degree sweep even within a narrow
+    (a few linewidths) window around resonance.
+  - undercoupled (R1 > R2): the circle stays strictly outside the origin;
+    the phase wobbles down and partway back but never completes the
+    loop -- net change across the full FSR is 0 degrees, even though a
+    narrow window can still show a local swing of some tens of degrees
+    that looks superficially similar to the overcoupled case's onset.
+
+If you need to classify a cavity's coupling regime from its reflection
+coefficient alone (rather than by comparing R1 vs R2 directly), the
+full-FSR winding-number check above is the robust way to do it -- the
+on-resonance power dip minimum |r(0)|^2 alone CANNOT distinguish
+undercoupled from overcoupled: swapping R1 and R2 leaves the Finesse and
+the power dip depth completely unchanged, and only the phase winding
+differs.
+
+
+5. A NUMERICAL GOTCHA AT EXACT CRITICAL-COUPLING RESONANCE
+-----------------------------------------------------------------
+
+For a critically coupled cavity (R1 = R2 exactly), r(0) is mathematically
+exactly zero. angle() of a floating-point number that is *supposed* to be
+zero but lands as a tiny nonzero complex value due to roundoff can return
+an essentially arbitrary angle -- the true phase is undefined at a genuine
+zero, and floating point does not represent "undefined" gracefully. In
+practice this rarely disrupts unwrap() across a full swept curve (the
+single ill-conditioned sample is surrounded by well-conditioned
+neighbors, and unwrap's job is choosing 2*pi multiples, not correcting
+outliers), but if you need a single clean scalar phase value exactly on
+resonance for a critically coupled cavity, don't evaluate exactly at
+detuning = 0; evaluate at a nearby fraction of a linewidth instead, or
+accept that the value there is formally singular and treat it specially
+in whatever downstream code consumes it (e.g. skip it, or interpolate
+across it) rather than trusting a raw angle() call at exactly that point.
+
+
+6. IF YOU NEED SEVERAL SPECTRAL LINES' PHASES AT ONCE (e.g. FOR PDH)
+------------------------------------------------------------------------
+
+If you're computing the phase of multiple lines at different detunings
+(e.g. a carrier and two modulation sidebands, as in the PDH phasor
+picture -- see tutorials/pdhphasor.txt), do NOT unwrap each line's phase
+independently across its own separately-called sweep and then compare
+the results. Each independent unwrap() call picks its own arbitrary
+starting reference and can accumulate a different multiple of 2*pi than
+another line's unwrap call, even if the underlying physical phase
+relationship between the lines is well-defined. Two safe alternatives:
+  - compare the RAW complex phasors directly (e.g. via the dot product
+    Re(Z*conj(W)), as the PDH error signal does) rather than their
+    individually unwrapped phase angles;
+  - if you do need a single scalar relative phase between two lines,
+    compute angle(r_line1 .* conj(r_line2)) directly -- this cancels any
+    common but arbitrary phase reference and stays well inside a single
+    branch, so the ordinary (-180, 180] wrap is what you want there, not
+    unwrap.
+
+
+SUMMARY CHECKLIST
+--------------------
+[ ] confirmed the primitive being called returns a COMPLEX reflection
+    coefficient, not a real-valued power spectrum
+[ ] used unwrap(angle(...)) for any swept/plotted curve, not bare angle()
+[ ] detuning array is sorted and evaluated in order before unwrap()
+[ ] sampling is dense enough (many points per LinewidthFWHM) that the
+    true phase never jumps by more than pi between adjacent samples
+[ ] distinguishing undercoupled from overcoupled/critical done via the
+    NET phase change over one FULL FSR, not a local slope near resonance
+[ ] avoided evaluating a lone scalar phase exactly at detuning = 0 for a
+    critically coupled (R1 = R2) cavity
+[ ] when comparing multiple lines' phases against each other, used the
+    raw complex product/dot-product form instead of comparing two
+    independently unwrapped curves

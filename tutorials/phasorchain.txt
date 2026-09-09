@@ -1,0 +1,246 @@
+HOW TO PLOT THE CAVITY REFLECTIVITY'S PHASOR CHAIN
+=====================================================
+
+Audience: an AI (or human) that has a working CAVITY implementation and
+wants to visualize WHY the reflection coefficient has the value it does,
+by drawing it as a chain of individual round-trip contributions added
+head-to-tail in the complex plane, rather than just plotting the final
+number.
+
+This is a different picture from the PDH carrier/sideband dot-product
+phasor animation (see tutorials/pdhphasor.txt) -- that one visualizes how
+three ALREADY-REFLECTED spectral lines combine to give an error signal;
+this one visualizes how a SINGLE reflection coefficient itself is built
+up, term by term, inside one cavity. Read tutorials/reflectedphase.txt
+first if the reflection coefficient's phase behavior itself is unfamiliar
+-- this tutorial assumes you already know what r(detuning) is and why its
+phase does what it does, and focuses purely on how to decompose and draw
+it as a chain.
+
+
+1. THE PHYSICAL PICTURE YOU ARE DRAWING
+-------------------------------------------
+
+Light hitting the front mirror splits into two contributions to the
+total reflected field:
+
+  - The PROMPT REFLECTION: the part that bounces straight off the front
+    mirror without ever entering the cavity. Detuning-independent,
+    always exactly -r1 (r1 = sqrt(front-mirror power reflectivity)).
+
+  - The ROUND-TRIP LEAKAGE: light that entered the cavity, circulated
+    some number of times, and leaked back out through the front mirror.
+    This is an infinite geometric series -- term n is the contribution
+    from light that has completed n round trips before escaping:
+
+        term_n = t1^2 * r2 * e^{i*phi} * (r1*r2*e^{i*phi})^n,   n = 0, 1, 2, ...
+
+    where t1 = sqrt(1 - r1^2), r2 = sqrt(back-mirror power reflectivity),
+    and phi = 2*pi*detuning/FSR is the round-trip phase.
+
+The reflection coefficient is the prompt term plus the FULL SUM of the
+series: r(detuning) = -r1 + sum_n term_n, which closes to the familiar
+r(detuning) = (r2*e^{i*phi} - r1) / (1 - r1*r2*e^{i*phi}). What the
+"phasor chain" plot shows is the PARTIAL SUMS of that series, drawn as a
+connected path -- each partial sum is one more vector added tip-to-tail
+onto the last -- so a viewer can watch the sum build up toward the final
+closed-form answer rather than just being told the answer.
+
+If your cavity implementation exposes the per-round-trip terms directly
+(e.g. a getRoundTripEchoTerms(detuning, numRoundTrips) method returning
+an unsummed array), use that. If it only exposes the closed-form
+reflectionCoefficient(detuning) and the two mirror reflectivities, derive
+the individual terms yourself from the formula above -- you need r1, r2,
+and phi(detuning), all of which follow directly from the cavity's own
+public properties (mirror power reflectivities and FSR).
+
+
+2. THE COMPUTATION, STEP BY STEP
+-------------------------------------
+
+For one chosen detuning value:
+
+    promptTerm = -r1                                    % scalar, detuning-independent
+    echoTerms  = [term_0, term_1, ..., term_{N-1}]       % N-length vector, from Section 1's formula
+    chainTips  = [promptTerm, promptTerm + cumsum(echoTerms)]
+    points     = [0, chainTips]                          % prepend the origin
+    exactValue = cavity.reflectionCoefficient(detuning)  % closed-form cross-check
+
+`points` is now the full sequence of vertices to draw as a connected
+path: it starts at the origin, jumps to promptTerm (the prompt-reflection
+arrow), then walks through each partial sum of the round-trip series.
+`exactValue` should equal `points(end)` to within numerical noise, GIVEN
+enough terms N -- see Section 4 for how many is enough. Plot exactValue
+as a distinct marker (e.g. an "x") separate from the chain path itself,
+so a viewer can see the truncated sum visibly landing on (or falling
+short of) the true closed-form point. This cross-check is your primary
+correctness signal, same role as the closed-form comparisons in the other
+two tutorials in this directory.
+
+Do not forget the origin-prepending step: without it, the plotted path
+starts at promptTerm instead of at 0, and the "direct bounce off the
+front mirror" segment (0 -> promptTerm) is invisible.
+
+
+3. CHOOSING WHICH DETUNINGS TO SHOW
+-----------------------------------------
+
+Do NOT pick fixed absolute detunings (or fixed absolute round-trip-phase
+angles like +/-30 or +/-90 degrees) to illustrate "near resonance" vs.
+"off resonance." At high finesse the resonance is an extremely narrow
+sliver of one FSR -- at Finesse = 1000, the resonance is only about
+360/1000 = 0.36 degrees of round-trip phase wide. Fixed-degree detunings
+land far outside it and every one of them will show essentially maximum
+reflection, making all your panels look identical and uninformative.
+
+Instead, scale chosen detunings to the cavity's OWN LinewidthFWHM (a
+property that already accounts for that cavity's specific finesse):
+a good default set, illustrating the full range of interesting behavior,
+is:
+
+    0                       (on resonance -- exact cancellation, or as
+                             close to it as this cavity's coupling regime
+                             allows)
+    +/- 0.5 * LinewidthFWHM  (half a linewidth either side)
+    +/- 1.5 * LinewidthFWHM  (comfortably outside the resonance dip)
+
+Additionally, detuning = FSR/2 (anti-resonance) is a UNIVERSAL reference
+point independent of finesse -- always exactly half an FSR away from any
+resonance, where the round-trip leakage rotates all the way around to
+point in the SAME direction as the prompt term rather than the opposite
+direction, giving this cavity's maximum reflection. Worth including
+alongside the linewidth-scaled points precisely because it needs no
+finesse-dependent scaling to be meaningful.
+
+
+4. HOW MANY ROUND-TRIP TERMS TO INCLUDE, AND HOW TO DRAW THEM
+--------------------------------------------------------------------
+
+The series converges at a rate set by (r1*r2)^n, i.e. by the same
+quantity (g = r1*r2) that sets the cavity's own Finesse -- high finesse
+means the light survives many round trips before decaying, which is
+exactly why a high-finesse cavity needs far more terms to visually
+converge than a low-finesse one:
+
+  - LOW finesse (a handful to a few dozen round trips needed): draw the
+    chain with visible markers at each vertex ("-o" style in MATLAB) --
+    individual round trips are genuinely countable by eye, and that's
+    the pedagogically interesting part for this case.
+  - HIGH finesse (thousands of round trips needed, e.g. Finesse = 1000
+    needs on the order of numRoundTrips ~ 3000 to converge to graphical
+    accuracy): drop the per-vertex markers and draw the partial-sum path
+    as a smooth, unmarked curve. At that term count, individual vertices
+    are packed far too densely to distinguish, and marker rendering both
+    looks cluttered and is needlessly slow.
+
+Whichever term count you choose, ALWAYS verify the closed-form marker
+(Section 2's exactValue) visibly lands at the chain's final tip before
+trusting the figure -- an under-converged high-finesse chain will visibly
+fall short of exactValue, which is your signal to raise numRoundTrips,
+not to distrust the closed form.
+
+
+5. TWO WAYS TO PRESENT IT: ANIMATE, OR LAY OUT AS A GRID
+--------------------------------------------------------------
+
+The computation in Section 2 is identical either way; only the outer
+presentation differs.
+
+  A. ANIMATED SWEEP: continuously vary detuning across a span (e.g. one
+     full FSR, or a fraction of it), recomputing promptTerm/echoTerms/
+     chainTips/exactValue each frame and updating existing plot handles'
+     XData/YData in place (do not clear and replot from scratch each
+     frame -- that's slower and flickers). This is the better choice when
+     the point is to SHOW THE TRANSITION: watching the chain visibly
+     spiral outward from a near-cancelling collapse on resonance,
+     through partial cancellation, out to the anti-resonance point where
+     it swings around to reinforce rather than cancel. Use a low-finesse
+     cavity for this presentation specifically so the marker-per-vertex
+     style from Section 4 stays legible while it's moving.
+
+  B. FIXED SMALL-MULTIPLES GRID: instead of animating, compute the chain
+     at a handful of representative detunings (Section 3's list makes a
+     good default: 0, +/-0.5 and +/-1.5 linewidths, and FSR/2) and lay
+     them out as a tiled grid of static panels (a 2x3 tiledlayout fits
+     six panels comfortably), one chain per panel, titled with its own
+     detuning label and resulting |r|^2. This is the better choice for a
+     report, paper, or any medium where a reader needs to compare several
+     cases side by side at their own pace, rather than watch a
+     transition play out in real time -- and it's the only sane choice at
+     high finesse, where Section 4's thousands-of-round-trips smooth
+     curve makes an animated per-frame recompute needlessly expensive for
+     no corresponding visual payoff (a smooth spiral doesn't read as
+     "spiraling" frame to frame the way a countable low-finesse chain
+     does).
+
+Both presentations share every other convention below.
+
+
+6. SHARED DRAWING CONVENTIONS
+-----------------------------------
+
+  - `axis equal` on every panel -- without it, the chain's true geometry
+    (angles between the prompt term and the round-trip buildup) is
+    visually distorted.
+  - FIXED axis limits of [-1.1, 1.1] on both axes, not autoscaled. A
+    lossless cavity's reflection coefficient can never leave the unit
+    disk (|r| <= 1 always), so this bound is always safe and never
+    clips anything -- and fixing it prevents the chain's apparent size
+    from jumping between panels/frames for no physical reason (same
+    jitter issue called out in tutorials/pdhphasor.txt's pitfalls).
+  - Use two distinct colors: one for the prompt-reflection segment
+    (origin to promptTerm), a different one for the round-trip buildup
+    path (promptTerm's tip through every partial sum). This makes the
+    two-term structure of Section 1's formula -- reflection is the
+    buildup MINUS the direct bounce, not merely "the sum of everything"
+    -- visible directly, rather than requiring the reader to infer it
+    from a single uniformly-colored path.
+  - Title or annotate each panel/frame with the resulting |exactValue|^2
+    -- a numeric readout lets a reader confirm the geometric picture
+    (how close the chain's final tip sits to the origin) against the
+    actual reflected power, rather than eyeballing distances.
+
+
+7. THE PHYSICAL STORY TO NARRATE ALONGSIDE THE PLOT
+---------------------------------------------------------
+
+Worth stating explicitly (in a caption, title, or accompanying text),
+since it's a common and specific misreading of this figure: on
+resonance, it is tempting to describe the cancellation as "all the
+individual round trips destructively interfere with each other." That is
+NOT what the chain shows. The round-trip buildup curve itself always
+builds OUTWARD from promptTerm's tip -- the individual round trips
+interfere CONSTRUCTIVELY with each other, building up coherently; if they
+cancelled among themselves, nothing would build up and there would be no
+resonance at all. What actually happens on resonance is a ONE-ON-ONE
+cancellation between two SUMS, as seen from the origin: the buildup
+curve's final tip lands exactly opposite the tip of the prompt-reflection
+arrow, and those two vectors -- not the many individual round trips
+composing the blue curve -- are what cancel. Moving off resonance rotates
+the buildup's final tip away from that exactly-opposite point, so the
+two sums no longer fully cancel and reflected power rises; at the FSR/2
+anti-resonance point the buildup has rotated all the way around to point
+in the SAME direction as the prompt term, so the two sums add instead of
+cancel, giving maximum reflection.
+
+
+SUMMARY CHECKLIST
+--------------------
+[ ] promptTerm = -r1, computed once (detuning-independent)
+[ ] echoTerms derived either from a dedicated cavity method, or from
+    term_n = t1^2 * r2 * e^{i*phi} * (r1*r2*e^{i*phi})^n
+[ ] chain vertices = [0, promptTerm, promptTerm+cumsum(echoTerms)],
+    origin explicitly prepended
+[ ] closed-form exactValue plotted as a distinct marker, verified to
+    land at the chain's final tip (raise numRoundTrips if it doesn't)
+[ ] chosen detunings scaled to this cavity's own LinewidthFWHM, not
+    fixed absolute degrees/Hz, plus the finesse-independent FSR/2
+    anti-resonance point
+[ ] marker-per-vertex style only for low-finesse (few dozen terms or
+    fewer); smooth unmarked curve for high-finesse (thousands of terms)
+[ ] axis equal, and fixed [-1.1, 1.1] limits on both axes
+[ ] prompt-reflection segment and round-trip-buildup path drawn in two
+    distinct colors
+[ ] narration/caption states the cancellation as one-on-one between the
+    prompt term and the buildup SUM, not a many-way cancellation among
+    individual round trips
