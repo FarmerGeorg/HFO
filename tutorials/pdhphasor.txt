@@ -1,0 +1,295 @@
+HOW TO BUILD A PDH PHASOR ANIMATION
+====================================
+
+Audience: an AI (or human) that has NOT seen this codebase before, but has
+been handed three working pieces of physics code:
+
+  1. A CAVITY object/function that, given a detuning in Hz, returns the
+     cavity's complex amplitude reflection coefficient r(detuning) =
+     E_reflected / E_incident. (In this repo: OpticalCavity.reflectionCoefficient.)
+  2. A REFLECTION SPECTRUM function refl(f) that plots/returns |r(f)|^2
+     and/or arg(r(f)) over a swept frequency or detuning axis. (In this
+     repo: computeReflectedPowerFrequencyScan.m / plotCavityResponse.m.)
+  3. A PDH SPECTRUM function pdh(f) that returns the demodulated PDH error
+     signal epsilon(detuning) for a given modulation index, modulation
+     frequency, and demodulation phase. (In this repo:
+     computePdhErrorSignalDotProduct.m / simulatePdhErrorSignal.m.)
+
+None of these three primitives, by themselves, expose the *phasor* picture
+-- the carrier and two sidebands as individual rotating arrows in the
+complex plane, whose geometric dot product IS the PDH error signal. That
+picture is what this tutorial builds, using the three primitives above as
+ingredients and as a correctness check.
+
+Read this end to end before writing code: the pitfalls in Section 6 are
+each the result of getting a sign or a scale wrong on the first pass, and
+knowing them up front is cheaper than debugging an animation that "looks
+plausible but is wrong."
+
+Source material: this project's entire derivation (notation, the phasor
+dot-product identity, the timestamps cited throughout this codebase's
+comments) follows a single reference webinar --
+"Webinar | High-Performance PDH Locking with Reconfigurable
+Instrumentation" (Laser 2000 UK / Liquid Instruments, speaker John
+Miller, recorded 2024-07-09): https://www.youtube.com/watch?v=aMtJhPFo9-c
+-- specifically its pedagogical walkthrough of the PDH phasor picture
+(carrier + counter-rotating sidebands, the dot-product shortcut for the
+error signal). Watch or transcript-read that section before implementing
+Section 1 below if any step there is unclear from prose alone.
+
+
+1. THE PHYSICAL PICTURE YOU ARE ANIMATING
+------------------------------------------
+
+Phase modulation puts three (relevant) spectral lines onto the laser
+field: the carrier (order 0) and two sidebands (order +1, "upper", and
+order -1, "lower"), spaced at +/- the modulation frequency f_m. Their
+amplitudes come from the Jacobi-Anger expansion:
+
+    a_0  = J_0(beta)
+    a_+1 = J_1(beta)
+    a_-1 = -J_1(beta)        (Bessel identity J_{-n} = (-1)^n J_n)
+
+where beta is the modulation index. If your cavity/reflection/PDH
+primitives don't already expose a0/a1/a-1 as a byproduct, compute them
+yourself with the Bessel function of the first kind (besselj(n, beta) in
+MATLAB, scipy.special.jv in Python, etc.) -- you do not need any other
+part of the modulator model.
+
+Each spectral line reflects off the cavity independently, picking up
+whatever complex reflection coefficient the cavity has AT THAT LINE'S OWN
+FREQUENCY. At a carrier detuning Delta, the three reflected field phasors
+are:
+
+    Z        = a_0  * r(Delta)                     (carrier, reflected)
+    E_upper  = a_+1 * r(Delta + f_m)                (upper sideband, reflected)
+    E_lower  = a_-1 * r(Delta - f_m)                (lower sideband, reflected)
+
+A photodiode after the cavity sees the beat notes between these lines.
+Demodulating at the local-oscillator frequency f_m, referenced to a
+demodulation phase theta, picks out the omega_m beat note between the
+carrier and each sideband. The two sidebands counter-rotate (this is a
+direct consequence of the J_{-1} = -J_1 sign flip), so "freezing" them at
+phase theta rotates them by OPPOSITE signs, not the same rotation:
+
+    upperTerm = E_upper * exp(-1i*theta)
+    lowerTerm = E_lower * exp(+1i*theta)
+    W         = upperTerm + lowerTerm               (the "sideband resultant")
+
+The demodulated PDH error signal is exactly the geometric dot product of
+the carrier phasor Z with the sideband resultant W, treating each complex
+number as a 2D real vector (Re, Im):
+
+    epsilon = Re(Z) * Re(W) + Im(Z) * Im(W) = Re(Z * conj(W))
+
+This identity is not an approximation or a visual metaphor -- it is a
+literal rearrangement of the same algebra your PDH spectrum(f) primitive
+already implements. That means you now have two independent ways to
+compute epsilon at a given detuning: from your PDH spectrum primitive
+directly, or from Z and W above. THEY MUST AGREE, to numerical noise, at
+every frame. Use this as your primary correctness check (Section 5).
+
+
+2. WHAT THE ANIMATION NEEDS TO SHOW
+--------------------------------------
+
+A minimal but complete version has two halves, updated together as
+detuning Delta sweeps across a span wide enough to see the carrier
+resonance and both sideband resonances (a span of about 1.3x f_m on
+each side of zero is a reasonable default):
+
+  A. CONTEXT panels (driven by your reflection-spectrum and PDH-spectrum
+     primitives, computed ONCE over the full sweep range and never
+     recomputed per frame):
+       - reflected power |r(f)|^2 vs. detuning, with three vertical
+         markers tracking where the carrier and each sideband currently
+         sit (at Delta, Delta+f_m, Delta-f_m);
+       - the PDH error signal epsilon(f) vs. detuning, with a single
+         point marker at the current Delta.
+
+  B. PHASOR panel (recomputed every frame, since it depends on the
+     current Delta and theta):
+       - arrow for Z (carrier), from the origin;
+       - arrow for upperTerm, from the origin;
+       - arrow for lowerTerm, drawn TIP-TO-TAIL from the end of
+         upperTerm (i.e. starting at upperTerm, not at the origin) --
+         this makes their vector sum W visually obvious as the straight
+         line from the origin to the second arrow's tip;
+       - arrow for the resultant W, from the origin;
+       - a thick projection segment of length epsilon along Z's own
+         direction (see Section 4 for why this specific construction and
+         not "project W onto Z").
+
+Optional but very informative extras, in order of how much they add:
+  - live sliders for Delta and theta (turns a fixed sweep into an
+    explorable instrument);
+  - live sliders for modulation index and both mirror reflectivities, so
+    the viewer can move between under/critically/over-coupled regimes
+    and under/optimal/over-modulated regimes without restarting;
+  - a Play/Stop toggle that auto-advances Delta on a timer, while
+    sliders remain live and continuous during playback.
+
+
+3. INGREDIENT COMPUTATION, PER FRAME
+--------------------------------------
+
+Given Delta and theta for the current frame, and a0/a1/am1 computed once
+up front (they don't depend on Delta):
+
+    Z         = a0  * cavity.reflectionCoefficient(Delta)
+    E_upper   = a1  * cavity.reflectionCoefficient(Delta + f_m)
+    E_lower   = am1 * cavity.reflectionCoefficient(Delta - f_m)
+    upperTerm = E_upper * exp(-1i*theta)
+    lowerTerm = E_lower * exp(+1i*theta)
+    W         = upperTerm + lowerTerm
+    epsilon   = real(Z)*real(W) + imag(Z)*imag(W)
+
+If your cavity primitive only exposes a "reflection spectrum" function of
+absolute frequency rather than a reflectionCoefficient(detuning) method,
+adapt the three calls above accordingly -- the math is identical, only
+the argument convention changes (absolute frequency vs. detuning from a
+given resonance).
+
+
+4. DRAWING THE DOT PRODUCT ITSELF
+-------------------------------------
+
+epsilon is a signed scalar, not a vector, but it's most legible drawn as
+a segment of that exact length along Z's own direction:
+
+    if abs(Z) > 0
+        unitZ = Z / abs(Z)
+    else
+        unitZ = 1          % arbitrary; see below for why this is safe
+    end
+    projectionPoint = epsilon * unitZ
+    draw a line from the origin to projectionPoint
+
+Do NOT draw this as "the vector projection of W onto Z" using the formula
+|W|*cos(angle) -- that's a different, WRONG quantity: it's missing the
+|Z| factor entirely (the true dot product scales with both magnitudes),
+and it's undefined when |Z| = 0. Falling back to an arbitrary unitZ (e.g.
+1) when Z = 0 is safe precisely because epsilon itself is exactly 0
+whenever Z = 0, so the segment collapses to the origin regardless of
+which direction you picked -- there's no discontinuity to hide.
+
+A thin dotted connector from the tip of W to projectionPoint helps the
+viewer see this as a literal geometric projection rather than an
+unrelated overlay.
+
+
+5. VALIDATION: CROSS-CHECK AGAINST THE GIVEN PDH SPECTRUM PRIMITIVE
+------------------------------------------------------------------------
+
+Before trusting the animation, verify numerically that the frame-by-frame
+dot product matches your provided PDH spectrum(f) primitive:
+
+    epsilonFromPhasors  = real(Z)*real(W) + imag(Z)*imag(W)   % per Section 3
+    epsilonFromPrimitive = pdhSpectrum(Delta, DemodulationPhase=theta)
+
+    assert(abs(epsilonFromPhasors - epsilonFromPrimitive) < tolerance)
+
+across the full swept range, not just at one detuning. If they disagree:
+  - check the counter-rotation SIGNS first (exp(-1i*theta) on upper,
+    exp(+1i*theta) on lower, or your codebase's equivalent convention --
+    what matters is that they are opposite, not which one is which);
+  - check that a_-1 was computed as -J_1(beta), not +J_1(beta);
+  - check that your PDH spectrum primitive's own demodulation-phase
+    convention matches the theta you're feeding into upperTerm/lowerTerm
+    (a sign or 90-degree offset mismatch here is the single most common
+    bug in this kind of build).
+
+This cross-check is worth automating as a real unit test if the animation
+code is going to live in a codebase with a test suite, not just a manual
+eyeball comparison run once.
+
+
+6. PITFALLS SEEN BUILDING THIS THE FIRST TIME
+-------------------------------------------------
+
+- FIXED axis limits, not autoscaled. Compute the largest phasor magnitude
+  that can ever occur (roughly (a0 + a1 + abs(am1)) * 1.25) once, up
+  front, and set the phasor panel's xlim/ylim to that once. If you let
+  the axes autoscale per frame, arrows change apparent length between
+  frames even when nothing physically changed, which reads as jitter.
+
+- Use `axis equal` on the phasor panel. Without it, a dot product drawn
+  "along Z's direction" will not visually look aligned with Z, because
+  the x and y scales differ.
+
+- unwrap(angle(r(f))), not angle(r(f)), when plotting reflected phase
+  across a wide span. The far-detuned background reflection sits exactly
+  at -r1 (mirror reflectivity), a negative real number -- exactly on the
+  +/-180 degree branch cut of angle(). Plotting bare angle() produces a
+  visually jarring jump at every point the trace crosses that cut, which
+  isn't a real physical feature.
+
+- The near-90-degree angle you'll often see between Z and W away from
+  resonance is NOT caused by your choice of demodulation phase theta --
+  it's a structural consequence of the sidebands' J_{-1} = -J_1 sign
+  flip, present at any theta. Only detuning itself moves this angle
+  meaningfully, by breaking the phase relationship between carrier and
+  sidebands near an actual resonance. Don't build a slider demo that
+  implies "adjust theta to see the angle open and close" -- that's
+  showing the wrong knob.
+
+- If you expose a mirror-reflectivity slider, don't put it on a linear
+  scale in R. Finesse grows like 1/(1-R), so a linear slider spends
+  almost its entire range on Finesse < 100 and crams every interesting
+  high-finesse cavity into the last sliver near R=1. Parameterize the
+  slider by s = -log10(1-R) ("nines of reflectivity") instead, and invert
+  with R = 1 - 10^(-s), so the slider steps through Finesse
+  multiplicatively rather than additively.
+
+- Recompute the ingredient sideband amplitudes (a0/a1/am1) and any
+  background context curves ONLY when a physics parameter (modulation
+  index, mirror reflectivity, modulation frequency) actually changes --
+  not on every animation frame. Only Z/upperTerm/lowerTerm/W/epsilon
+  need recomputing per frame, since only Delta and theta change during
+  a sweep or a play-through.
+
+- When redrawing per frame, update existing graphics objects' data
+  (set(handle, "XData", ..., "UData", ...) in MATLAB, or the equivalent
+  artist-mutation call in your plotting library) rather than clearing and
+  replotting from scratch. Replotting every frame is both slower and
+  causes visible flicker.
+
+
+7. OPTIONAL EXTENSION: THE PHASE-MODULATION PHASOR PICTURE ON ITS OWN
+--------------------------------------------------------------------------
+
+A companion (and simpler) animation, independent of the cavity entirely,
+shows carrier + sidebands BEFORE reflection, tracing the "rocking" motion
+of a phase-modulated phasor over one modulation period:
+
+    t in [0, 1/f_m], omega = 2*pi*f_m
+    upperVec(t)   = a1  * exp(+1i*omega*t)
+    lowerVec(t)   = am1 * exp(-1i*omega*t)
+    resultant(t)  = a0 + upperVec(t) + lowerVec(t)
+
+Overlay the ideal infinite-order phasor exp(1i*beta*sin(omega*t)) (which
+stays exactly on the unit circle for all t) against the truncated
+3-line resultant above (which does not, since only the full Jacobi-Anger
+sum preserves |E(t)| = 1 exactly). This is a good sanity-building step to
+implement BEFORE the full cavity-reflected version in Sections 3-5, since
+it exercises the counter-rotation and tip-to-tail drawing mechanics
+without also requiring the cavity primitive to be correct.
+
+
+SUMMARY CHECKLIST
+--------------------
+[ ] a0, a1, am1 computed from besselj(order, beta), with am1 = -a1
+[ ] Z, E_upper, E_lower computed by evaluating the cavity's reflection
+    coefficient at Delta, Delta+f_m, Delta-f_m respectively
+    (or the equivalent absolute-frequency calls into your primitives)
+[ ] upperTerm / lowerTerm rotated by theta with OPPOSITE signs
+[ ] W = upperTerm + lowerTerm
+[ ] epsilon = Re(Z)*Re(W) + Im(Z)*Im(W), cross-checked against the given
+    PDH spectrum(f) primitive across the whole sweep, not just one point
+[ ] dot-product segment drawn as epsilon * (Z/abs(Z)), with a safe
+    fallback direction when Z = 0
+[ ] fixed (not autoscaled) axis limits sized from the max possible
+    phasor magnitude
+[ ] axis equal on the phasor panel
+[ ] unwrap(), not angle(), for any wide-span background phase plot
+[ ] per-frame updates mutate existing graphics handles, not replot
